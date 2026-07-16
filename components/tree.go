@@ -724,7 +724,13 @@ func (tree *Tree) search(searchText string) {
 	}
 	var rankedNodes []rankedNode
 
+	// Build parent map while walking so we can walk up the ancestor chain
+	// when a two-part search (e.g. "schema tablename") needs to match against
+	// a non-immediate ancestor in deep trees with section headers.
+	parentMap := make(map[*tview.TreeNode]*tview.TreeNode)
+
 	rootNode.Walk(func(node, parent *tview.TreeNode) bool {
+		parentMap[node] = parent
 		nodeText := strings.ToLower(stripColorTags(node.GetText()))
 
 		if databaseNameFilter == "" {
@@ -735,14 +741,25 @@ func (tree *Tree) search(searchText string) {
 			}
 		} else {
 			rank := fuzzy.RankMatch(tableNameFilter, nodeText)
-			if rank >= 0 && parent != nil {
-				parentText := strings.ToLower(stripColorTags(parent.GetText()))
-				parentRank := fuzzy.RankMatch(databaseNameFilter, parentText)
-				if parentRank >= 0 {
+			if rank >= 0 {
+				// Walk up the ancestor chain (not just the immediate parent)
+				// so two-part search works through section headers
+				// (e.g. "auth users" in postgres > auth > tables > users).
+				var bestAncestorRank int = -1
+				var bestAncestorText string
+				for e := parentMap[node]; e != nil && e != rootNode; e = parentMap[e] {
+					eText := strings.ToLower(stripColorTags(e.GetText()))
+					eRank := fuzzy.RankMatch(databaseNameFilter, eText)
+					if eRank >= 0 && (bestAncestorRank < 0 || eRank < bestAncestorRank) {
+						bestAncestorRank = eRank
+						bestAncestorText = eText
+					}
+				}
+				if bestAncestorRank >= 0 {
 					adjustedTableRank := prioritizeResult(tableNameFilter, nodeText, rank)
-					adjustedParentRank := prioritizeResult(databaseNameFilter, parentText, parentRank)
-					// Combine ranks: prioritize table match but factor in database match
-					combinedRank := adjustedTableRank + (adjustedParentRank / 2)
+					adjustedAncestorRank := prioritizeResult(databaseNameFilter, bestAncestorText, bestAncestorRank)
+					// Combine ranks: prioritize table match but factor in ancestor match
+					combinedRank := adjustedTableRank + (adjustedAncestorRank / 2)
 					rankedNodes = append(rankedNodes, rankedNode{node: node, rank: combinedRank})
 				}
 			}

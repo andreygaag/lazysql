@@ -295,6 +295,58 @@ func TestExpandAncestors_AlreadyExpanded(t *testing.T) {
 	}
 }
 
+func TestExpandAncestors_FourLevelTree(t *testing.T) {
+	root := tview.NewTreeNode("-")
+	root.SetReference("-")
+
+	db := tview.NewTreeNode("mydb")
+	db.SetReference("mydb")
+	db.Collapse()
+	root.AddChild(db)
+
+	schema := tview.NewTreeNode("public")
+	schema.SetReference("public")
+	schema.Collapse()
+	db.AddChild(schema)
+
+	section := tview.NewTreeNode("tables")
+	section.SetReference("public.tables")
+	section.Collapse()
+	schema.AddChild(section)
+
+	target := tview.NewTreeNode("users")
+	target.SetReference("public.tables.users")
+	target.Collapse()
+	section.AddChild(target)
+
+	// Initially nothing expanded
+	if db.IsExpanded() {
+		t.Error("db should not be expanded initially")
+	}
+	if schema.IsExpanded() {
+		t.Error("schema should not be expanded initially")
+	}
+	if section.IsExpanded() {
+		t.Error("section should not be expanded initially")
+	}
+
+	expandAncestors(target, root)
+
+	if !db.IsExpanded() {
+		t.Error("db should be expanded after expandAncestors")
+	}
+	if !schema.IsExpanded() {
+		t.Error("schema should be expanded after expandAncestors")
+	}
+	if !section.IsExpanded() {
+		t.Error("section should be expanded after expandAncestors")
+	}
+	// target itself should not be touched by expandAncestors
+	if target.IsExpanded() {
+		t.Error("target node itself should not be expanded by expandAncestors")
+	}
+}
+
 // ── schemaProgrammingMock ───────────────────────────────────────────────────────
 // Implements drivers.Driver with SupportsProgramming()=true and UseSchemas()=true.
 // Used to test buildSchemaTree, addSchemaProgrammingSection, and the new
@@ -615,5 +667,118 @@ func TestGetTreeNodeDataSchemaProgramming_TableItem(t *testing.T) {
 	}
 	if data.Name != "users" {
 		t.Errorf("expected Name 'users', got '%s'", data.Name)
+	}
+}
+
+// ── search ancestor-walk tests ─────────────────────────────────────────────────
+
+func TestSearch_TwoPartFindsDeepNodeThroughSectionHeaders(t *testing.T) {
+	// Regression: two-part search ("auth users") must walk up the ancestor chain
+	// through section headers (tables/functions) to find the matching schema.
+	// Bug was that it only checked the immediate parent.
+	tree := &Tree{
+		TreeView: tview.NewTreeView(),
+		state:    &TreeState{},
+	}
+	root := tview.NewTreeNode("-")
+	root.SetReference("-")
+	tree.SetRoot(root)
+
+	// Build: postgres > auth > tables > users, sessions
+	//                   > functions > validate_user
+	db := tview.NewTreeNode("postgres")
+	db.SetReference("postgres")
+	db.Collapse()
+	root.AddChild(db)
+
+	schema := tview.NewTreeNode("auth")
+	schema.SetReference("auth")
+	schema.Collapse()
+	db.AddChild(schema)
+
+	tablesSection := tview.NewTreeNode("tables")
+	tablesSection.SetReference("auth.tables")
+	tablesSection.Collapse()
+	schema.AddChild(tablesSection)
+
+	usersNode := tview.NewTreeNode("users")
+	usersNode.SetReference("postgres.auth.tables.users")
+	usersNode.Collapse()
+	tablesSection.AddChild(usersNode)
+
+	sessionsNode := tview.NewTreeNode("sessions")
+	sessionsNode.SetReference("postgres.auth.tables.sessions")
+	sessionsNode.Collapse()
+	tablesSection.AddChild(sessionsNode)
+
+	functionsSection := tview.NewTreeNode("functions")
+	functionsSection.SetReference("auth.functions")
+	functionsSection.Collapse()
+	schema.AddChild(functionsSection)
+
+	validateFunc := tview.NewTreeNode("validate_user")
+	validateFunc.SetReference("postgres.auth.functions.validate_user")
+	validateFunc.Collapse()
+	functionsSection.AddChild(validateFunc)
+
+	tree.search("auth users")
+
+	if len(tree.state.searchFoundNodes) == 0 {
+		t.Fatal("expected search results, got none")
+	}
+
+	best := tree.state.searchFoundNodes[0]
+	if best.GetText() != "users" {
+		t.Errorf("expected best match 'users', got '%s'", best.GetText())
+	}
+
+	// Verify "users" is in results somewhere
+	found := false
+	for _, n := range tree.state.searchFoundNodes {
+		if n.GetText() == "users" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'users' to be in search results")
+	}
+}
+
+func TestSearch_SinglePartWorksNormally(t *testing.T) {
+	// Single-part search should still work without ancestor walking.
+	tree := &Tree{
+		TreeView: tview.NewTreeView(),
+		state:    &TreeState{},
+	}
+	root := tview.NewTreeNode("-")
+	root.SetReference("-")
+	tree.SetRoot(root)
+
+	db := tview.NewTreeNode("mydb")
+	db.SetReference("mydb")
+	root.AddChild(db)
+
+	tables := tview.NewTreeNode("tables")
+	tables.SetReference("mydb.tables")
+	db.AddChild(tables)
+
+	users := tview.NewTreeNode("users")
+	users.SetReference("mydb.tables.users")
+	tables.AddChild(users)
+
+	orders := tview.NewTreeNode("orders")
+	orders.SetReference("mydb.tables.orders")
+	tables.AddChild(orders)
+
+	tree.search("users")
+
+	if len(tree.state.searchFoundNodes) == 0 {
+		t.Fatal("expected search results, got none")
+	}
+
+	best := tree.state.searchFoundNodes[0]
+	if best.GetText() != "users" {
+		t.Errorf("expected best match 'users', got '%s'", best.GetText())
 	}
 }
